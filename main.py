@@ -1,4 +1,5 @@
 import logging
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import Annotated, Optional
 
@@ -28,6 +29,22 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
+# Lifespan
+# ---------------------------------------------------------------------------
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    logger.info("AcademicDot Tenants API starting up.")
+    if not is_encryption_configured():
+        logger.warning(
+            "ENCRYPTION_KEY is not set. Encrypted-field operations will fail."
+        )
+    yield
+    logger.info("AcademicDot Tenants API shutting down.")
+
+
+# ---------------------------------------------------------------------------
 # Application
 # ---------------------------------------------------------------------------
 settings = get_settings()
@@ -38,6 +55,7 @@ app = FastAPI(
     version="1.0.0",
     docs_url="/docs",
     redoc_url="/redoc",
+    lifespan=lifespan,
 )
 
 app.add_middleware(
@@ -53,6 +71,17 @@ app.add_middleware(
 # ---------------------------------------------------------------------------
 
 DbSession = Annotated[AsyncSession, Depends(get_db)]
+
+
+def _encrypt_field(value: str, field_label: str) -> str:
+    """Encrypt a plain-text value, raising HTTP 500 on failure."""
+    try:
+        return encrypt(value)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Encryption error for {field_label}: {exc}",
+        )
 
 
 def _to_response(tenant: Tenant) -> TenantResponse:
@@ -76,25 +105,6 @@ async def _get_active_tenant_by_id(node_id: int, db: AsyncSession) -> Tenant:
             detail=f"Tenant with node_id={node_id} not found.",
         )
     return tenant
-
-
-# ---------------------------------------------------------------------------
-# Startup / Shutdown
-# ---------------------------------------------------------------------------
-
-
-@app.on_event("startup")
-async def startup_event() -> None:
-    logger.info("AcademicDot Tenants API starting up.")
-    if not is_encryption_configured():
-        logger.warning(
-            "ENCRYPTION_KEY is not set. Encrypted-field operations will fail."
-        )
-
-
-@app.on_event("shutdown")
-async def shutdown_event() -> None:
-    logger.info("AcademicDot Tenants API shutting down.")
 
 
 # ---------------------------------------------------------------------------
@@ -288,15 +298,13 @@ async def create_tenant(payload: TenantCreate, db: DbSession) -> TenantResponse:
         )
 
     # Encrypt sensitive fields
-    try:
-        db_user_encrypted = encrypt(payload.db_user)
-        db_password_encrypted = encrypt(payload.db_password)
-        api_key_encrypted = encrypt(payload.api_endpoint_key) if payload.api_endpoint_key else None
-    except ValueError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Encryption error: {exc}",
-        )
+    db_user_encrypted = _encrypt_field(payload.db_user, "db_user")
+    db_password_encrypted = _encrypt_field(payload.db_password, "db_password")
+    api_key_encrypted = (
+        _encrypt_field(payload.api_endpoint_key, "api_endpoint_key")
+        if payload.api_endpoint_key
+        else None
+    )
 
     tenant_data = payload.model_dump(
         exclude={"db_user", "db_password", "api_endpoint_key"}
@@ -333,26 +341,19 @@ async def update_tenant(
 
     # Handle encrypted fields
     if "db_user" in update_data:
-        try:
-            tenant.db_user_encrypted = encrypt(update_data.pop("db_user"))
-        except ValueError as exc:
-            raise HTTPException(status_code=500, detail=f"Encryption error: {exc}")
+        tenant.db_user_encrypted = _encrypt_field(update_data.pop("db_user"), "db_user")
     else:
         update_data.pop("db_user", None)
 
     if "db_password" in update_data:
-        try:
-            tenant.db_password_encrypted = encrypt(update_data.pop("db_password"))
-        except ValueError as exc:
-            raise HTTPException(status_code=500, detail=f"Encryption error: {exc}")
+        tenant.db_password_encrypted = _encrypt_field(update_data.pop("db_password"), "db_password")
     else:
         update_data.pop("db_password", None)
 
     if "api_endpoint_key" in update_data:
-        try:
-            tenant.api_endpoint_key_encrypted = encrypt(update_data.pop("api_endpoint_key"))
-        except ValueError as exc:
-            raise HTTPException(status_code=500, detail=f"Encryption error: {exc}")
+        tenant.api_endpoint_key_encrypted = _encrypt_field(
+            update_data.pop("api_endpoint_key"), "api_endpoint_key"
+        )
     else:
         update_data.pop("api_endpoint_key", None)
 

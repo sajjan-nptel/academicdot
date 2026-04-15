@@ -2,7 +2,7 @@ import uuid
 from datetime import datetime
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field
 
 
 # ---------------------------------------------------------------------------
@@ -51,7 +51,7 @@ class TenantBase(BaseModel):
     db_ssl_enabled: bool = True
 
     # Features & Limits
-    features_enabled: list[str] | None = Field(default_factory=list)
+    features_enabled: list[str] = Field(default_factory=list)
     subscription_plan: str | None = Field(None, max_length=50)
     subscription_ends_at: datetime | None = None
     max_users: int | None = Field(None, ge=1)
@@ -204,12 +204,6 @@ class TenantResponse(BaseModel):
     updated_by: int | None
     deleted_at: datetime | None
     deleted_by: int | None
-
-    @field_validator("has_api_key", mode="before")
-    @classmethod
-    def _derive_has_api_key(cls, v: Any) -> bool:
-        # This field is computed in the router before serialisation
-        return bool(v)
 
 
 class TenantListResponse(BaseModel):
